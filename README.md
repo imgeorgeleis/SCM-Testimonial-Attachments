@@ -2,16 +2,16 @@
 
 A WordPress plugin by **Second Click Media** that automatically maintains a `testimonial_attachment` taxonomy from existing website content, and lets editors associate **Testimonials** with **People, Pages, Posts, Locations, and Services** through a grouped checkbox metabox.
 
-**Current version:** 1.1.0 · **License:** GPL-2.0-or-later · **PHP:** 7.4+
+**Current version:** 1.2.0 · **License:** GPL-2.0-or-later · **PHP:** 7.4+
 
 > **Important:** This plugin does **not** register custom post types or taxonomies. They must already be configured using ACF Pro (or equivalent WordPress registration code). Elementor is responsible for the frontend testimonial display and query configuration.
 
 ## Features
 
 - Creates and synchronizes attachment terms for **published** People, Pages, Posts, and Locations.
-- Creates service attachment terms for an explicitly configured list of WordPress `category` terms.
+- Always creates **11 built-in Service attachment terms**, without requiring any WordPress categories or matching posts.
 - Updates managed term names when source titles change.
-- Removes managed attachment terms if their source becomes unpublished, is deleted, or is no longer an eligible service category.
+- Removes post-backed attachment terms when their source is unpublished or deleted; never removes the 11 built-in Services because a source category is missing.
 - Displays a **Testimonial Attachments** metabox on testimonial edit screens, organized by source type.
 - Saves multi-term selections with nonce and capability checks; clearing all checkboxes clears existing assignments.
 - Uses unique, source-based managed term slugs (`scm-people-123`, etc.), rather than relying on non-unique post titles.
@@ -47,13 +47,13 @@ For a manual ZIP upload, package the `scm-testimonial-attachments/` folder itsel
 | Testimonial Attachments | `testimonial_attachment` | ACF Pro |
 | Pages | `page` | WordPress |
 | Posts | `post` | WordPress |
-| Services | `category` | WordPress categories |
+| Services | Built into this plugin | No category registration needed |
 
 In **ACF → Taxonomies**, attach `testimonial_attachment` to the `testimonial` post type. For the metabox to be available, the taxonomy must exist **and** be attached to Testimonials. You can disable the taxonomy's default administrative UI if it creates a duplicate selector; this plugin has its own grouped metabox.
 
-### What counts as a service?
+### Built-in Service attachments
 
-Services are **WordPress categories**, not an ACF `service` post type. The code matches category **names exactly** against this list:
+The plugin creates these **permanent default attachment terms**, whether or not matching WordPress categories, People, Pages, Posts, or Locations exist:
 
 - General
 - State Planning
@@ -67,14 +67,14 @@ Services are **WordPress categories**, not an ACF `service` post type. The code 
 - Wills and Trusts
 - Power of Attorney
 
-Edit the `$service_categories` array in `scm-testimonial-attachments.php` to change the list. The original spelling **“State Planning”** is preserved from the source plugin; change it to “Estate Planning” in both WordPress and the plugin if that was intended.
+Edit the `$service_categories` array in `scm-testimonial-attachments.php` to change the list. The spelling **“State Planning”** is deliberately preserved. Defaults use stable `scm-default-service-{name}` slugs and `service_default` term metadata. When an existing source term has the same display name, WordPress may require the default term to display a **“(Service)”** suffix; it is still a distinct selectable term under Services.
 
 ## How it works
 
 ```text
 Published People / Page / Post / Location ─┐
                                            ├─> Generated testimonial_attachment terms
-Matching WordPress service categories ─────┘                     │
+11 built-in default Service terms ──────────┘                     │
                                                                  ▼
                                                    Testimonial term assignments
                                                                  │
@@ -88,12 +88,11 @@ Example: a published People entry **Jane Smith** (post ID `123`) generates a ter
 
 | Event | Behavior |
 | --- | --- |
-| First request after activation/update (once registrations are available) | Scans supported published posts and service categories, then removes invalid managed terms |
+| First request after activation/update (once registrations are available) | Scans published source posts, creates all 11 default Service terms, then removes invalid source-backed terms |
 | Published source post created/updated | Creates/renames corresponding term |
 | Source post moved out of `publish` | Deletes corresponding managed term |
 | Source post permanently deleted | Deletes corresponding managed term |
-| Eligible service category created/renamed | Creates/renames corresponding term |
-| Eligible category deleted, or renamed to a non-listed name | Deletes corresponding managed term |
+| WordPress category created, renamed, or deleted | Does not affect built-in Service terms |
 | Daily WP-Cron run | Reconciles all configured source content and removes orphaned managed terms |
 
 **Important:** Deleting a generated term also removes that term's existing associations with testimonials. If you republish a deleted/unpublished source, the term is generated again with a **new term ID** and you must reassign affected testimonials.
@@ -102,15 +101,15 @@ Example: a published People entry **Jane Smith** (post ID `123`) generates a ter
 
 | Term meta key | Value |
 | --- | --- |
-| `_scm_attachment_source_id` | Source post ID or source category ID |
-| `_scm_attachment_source_type` | `people`, `page`, `post`, `location`, or `service` |
-| `_scm_attachment_source_taxonomy` | `category` for Services; empty for posts |
+| `_scm_attachment_source_id` | Source post ID; unused for built-in Services |
+| `_scm_attachment_source_type` | `people`, `page`, `post`, `location`, or `service_default` |
+| `_scm_attachment_source_taxonomy` | Empty for built-in Services and source posts |
 
 Term metadata defines ownership. Unmarked legacy/manual terms are left untouched by orphan cleanup, but the grouped metabox only lists **managed** terms. Manual creation of terms in this taxonomy is blocked by the plugin.
 
 ## Editorial workflow
 
-1. **Publish content** in People, Pages, Posts, or Locations, or create a matching WordPress service category.
+1. **Publish content** in People, Pages, Posts, or Locations as needed. All 11 Services are available automatically, without creating WordPress categories.
 2. **Add/Edit a Testimonial** in WordPress.
 3. In the **Testimonial Attachments** box, select one or more items under the relevant groups.
 4. **Publish / Update** the testimonial.
@@ -156,8 +155,6 @@ Example assignment:
 | --- | --- |
 | `init` (priority 100) | First-run synchronization after registrations |
 | `save_post` (priority 999) | Sync source posts |
-| `created_category` / `edited_category` | Sync relevant categories |
-| `delete_category` | Delete associated service term |
 | `before_delete_post` | Delete associated source term |
 | `add_meta_boxes_testimonial` | Register grouped metabox |
 | `save_post_testimonial` (priority 9999) | Store selected term IDs |
@@ -177,7 +174,7 @@ Example assignment:
 
 ## Troubleshooting
 
-**No attachment terms appear** — Check that the taxonomy is registered with the exact key `testimonial_attachment`; ensure there are published source entries and named service categories. The first sync runs after registration on the next request; WP-Cron periodically reconciles changes.
+**No attachment terms appear** — Check that the taxonomy is registered with the exact key `testimonial_attachment`; ensure the taxonomy exists; the 11 built-in Service terms require no categories. The first sync runs after registration on the next request; WP-Cron periodically reconciles changes.
 
 **No grouped selector** — Check that Testimonials uses the exact post type key `testimonial`, and that the taxonomy is attached to that post type. Look for the **Testimonial Attachments** metabox in screen preferences. Some editor configurations hide legacy metaboxes.
 
@@ -189,9 +186,11 @@ Example assignment:
 
 **Manual term creation gives an error** — Expected behavior. Terms must come from supported source content.
 
-## Upgrading from the supplied 1.0.0 code
+## Upgrading from versions 1.0.0 and 1.1.0
 
-Version 1.1.0 fixes an internal term-creation conflict, re-enables the grouped selector, and introduces a once-per-version sync plus daily cron rather than running a complete scan on every page load. Existing **managed** terms are matched by their source metadata. Their slugs are normalized to `scm-{source-type}-{source-id}`; if you depend on term slugs in Elementor, update your filters accordingly.
+Version 1.1.0 fixed an internal term-creation conflict, re-enables the grouped selector, and introduces a once-per-version sync plus daily cron rather than running a complete scan on every page load. Existing **managed** terms are matched by their source metadata. Their slugs are normalized to `scm-{source-type}-{source-id}`; if you depend on term slugs in Elementor, update your filters accordingly.
+
+Version 1.2.0 introduces permanent default Services. It migrates matching category-backed service terms **in place**, retaining their term IDs and existing testimonial relationships wherever a prior managed Service term can be identified. Existing Elementor queries targeting old *slugs* may need updating to `scm-default-service-{name}`.
 
 **Before upgrading:** take a database backup and test on staging. Review legacy/manual terms and ACF taxonomy fields. Avoid running two variants of this plugin concurrently.
 

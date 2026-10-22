@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SCM Testimonial Attachments
  * Description: Keeps testimonial attachment terms synchronized with content and provides a grouped testimonial selector.
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Second Click Media
  * License: GPL-2.0-or-later
  * Text Domain: scm-testimonial-attachments
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class SCM_Testimonial_Attachments {
-	const VERSION               = '1.1.0';
+	const VERSION               = '1.2.0';
 	const TESTIMONIAL_POST_TYPE = 'testimonial';
 	const PEOPLE_POST_TYPE      = 'people';
 	const LOCATION_POST_TYPE    = 'location';
@@ -38,9 +38,6 @@ final class SCM_Testimonial_Attachments {
 		add_action( 'init', array( $this, 'maybe_initial_sync' ), 100 );
 		add_action( self::CRON_HOOK, array( $this, 'sync_all_attachment_terms' ) );
 		add_action( 'save_post', array( $this, 'sync_terms_for_saved_post' ), 999, 3 );
-		add_action( 'created_category', array( $this, 'sync_terms_for_category' ), 20 );
-		add_action( 'edited_category', array( $this, 'sync_terms_for_category' ), 20 );
-		add_action( 'delete_category', array( $this, 'delete_terms_for_category' ), 20 );
 		add_action( 'before_delete_post', array( $this, 'delete_terms_for_source_post' ), 20 );
 		add_action( 'add_meta_boxes_' . self::TESTIMONIAL_POST_TYPE, array( $this, 'register_testimonial_metabox' ), 20 );
 		add_action( 'save_post_' . self::TESTIMONIAL_POST_TYPE, array( $this, 'save_testimonial_attachments' ), 9999, 3 );
@@ -109,12 +106,7 @@ final class SCM_Testimonial_Attachments {
 				$this->sync_source_post( $id, $source_type );
 			}
 		}
-		foreach ( $this->service_categories as $name ) {
-			$category = get_term_by( 'name', $name, 'category' );
-			if ( $category instanceof WP_Term ) {
-				$this->upsert_source_term( $category->term_id, 'service', $category->name, 'category' );
-			}
-		}
+		$this->sync_default_service_terms();
 		$this->remove_orphaned_attachment_terms();
 	}
 
@@ -193,20 +185,64 @@ final class SCM_Testimonial_Attachments {
 		update_term_meta( $term_id, self::SOURCE_TAXONOMY_META, $source_taxonomy );
 	}
 
-	public function sync_terms_for_category( $term_id ) {
-		if ( ! $this->taxonomy_available() ) {
-			return;
+	/**
+	 * Default services exist independently of WordPress categories and source posts.
+	 * Upgrade previously category-backed service terms in place to keep testimonial
+	 * relationships and existing term IDs intact.
+	 */
+	private function sync_default_service_terms() {
+		foreach ( $this->service_categories as $name ) {
+			$slug = 'scm-default-service-' . sanitize_title( $name );
+			$term = get_term_by( 'slug', $slug, self::TAXONOMY );
+			if ( ! $term ) {
+				$legacy = get_terms( array(
+					'taxonomy' => self::TAXONOMY,
+					'hide_empty' => false,
+					'name' => $name,
+					'number' => 0,
+				) );
+				if ( ! is_wp_error( $legacy ) ) {
+					foreach ( $legacy as $candidate ) {
+						$type = get_term_meta( $candidate->term_id, self::SOURCE_TYPE_META, true );
+						if ( 'service' === $type || 'service_default' === $type ) {
+							$term = $candidate;
+							break;
+						}
+					}
+				}
+			}
+			if ( ! $term ) {
+				$this->creating_managed_term = true;
+				try {
+					$created = wp_insert_term( $name, self::TAXONOMY, array( 'slug' => $slug ) );
+				} finally {
+					$this->creating_managed_term = false;
+				}
+				if ( is_wp_error( $created ) ) {
+					// WordPress disallows a second term with the same name on some
+					// taxonomies; keep a distinct label for the permanent default.
+					$this->creating_managed_term = true;
+					try {
+						$created = wp_insert_term( $name . ' (Service)', self::TAXONOMY, array( 'slug' => $slug ) );
+					} finally {
+							$this->creating_managed_term = false;
+					}
+				}
+				if ( is_wp_error( $created ) ) {
+						continue;
+					}
+				$term = get_term( $created['term_id'], self::TAXONOMY );
+			}
+			if ( ! $term instanceof WP_Term ) {
+				continue;
+			}
+			if ( $term->slug !== $slug ) {
+				wp_update_term( $term->term_id, self::TAXONOMY, array( 'slug' => $slug ) );
+			}
+			delete_term_meta( $term->term_id, self::SOURCE_ID_META );
+			update_term_meta( $term->term_id, self::SOURCE_TYPE_META, 'service_default' );
+			update_term_meta( $term->term_id, self::SOURCE_TAXONOMY_META, '' );
 		}
-		$category = get_term( $term_id, 'category' );
-		if ( $category instanceof WP_Term && in_array( $category->name, $this->service_categories, true ) ) {
-			$this->upsert_source_term( $category->term_id, 'service', $category->name, 'category' );
-		} else {
-			$this->delete_source_term( $term_id, 'service' );
-		}
-	}
-
-	public function delete_terms_for_category( $term_id ) {
-		$this->delete_source_term( $term_id, 'service' );
 	}
 
 	public function delete_terms_for_source_post( $post_id ) {
@@ -233,7 +269,7 @@ final class SCM_Testimonial_Attachments {
 			$id   = absint( get_term_meta( $term->term_id, self::SOURCE_ID_META, true ) );
 			$type = get_term_meta( $term->term_id, self::SOURCE_TYPE_META, true );
 			// Preserve unrelated / legacy terms that have not been marked as managed.
-			if ( ! $id || ! $type ) {
+			if ( 'service_default' === $type || ! $id || ! $type ) {
 				continue;
 			}
 			if ( 'service' === $type ) {
@@ -264,7 +300,7 @@ final class SCM_Testimonial_Attachments {
 		wp_nonce_field( 'scm_save_testimonial_attachments', 'scm_testimonial_attachments_nonce' );
 		$current = wp_get_post_terms( $post->ID, self::TAXONOMY, array( 'fields' => 'ids' ) );
 		$current = is_wp_error( $current ) ? array() : array_map( 'intval', $current );
-		$groups = array( 'People' => 'people', 'Pages' => 'page', 'Posts' => 'post', 'Locations' => 'location', 'Services' => 'service' );
+		$groups = array( 'People' => 'people', 'Pages' => 'page', 'Posts' => 'post', 'Locations' => 'location', 'Services' => 'service_default' );
 		echo '<p>' . esc_html__( 'Select the website content this testimonial should appear with.', 'scm-testimonial-attachments' ) . '</p>';
 		foreach ( $groups as $label => $type ) {
 			$terms = get_terms( array( 'taxonomy' => self::TAXONOMY, 'hide_empty' => false,
@@ -295,7 +331,7 @@ final class SCM_Testimonial_Attachments {
 		foreach ( array_unique( array_filter( array_map( 'absint', $submitted ) ) ) as $term_id ) {
 			$term = get_term( $term_id, self::TAXONOMY );
 			if ( $term instanceof WP_Term && in_array( get_term_meta( $term_id, self::SOURCE_TYPE_META, true ),
-				array( 'people', 'page', 'post', 'location', 'service' ), true ) ) {
+				array( 'people', 'page', 'post', 'location', 'service_default' ), true ) ) {
 				$valid[] = $term_id;
 			}
 		}
